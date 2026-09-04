@@ -24,3 +24,5 @@ dist/
 # System Files
 .DS_Store
 Thumbs.db
+
+project_overview.md
