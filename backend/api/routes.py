@@ -1,10 +1,17 @@
 import os
 import shutil
+import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from services.ingestion import ingest_document
 from services.hybrid_retriever import hybrid_retriever
-from db.database import get_db_connection
+from graph.workflow import rag_workflow
+from db.database import (
+    add_message,
+    create_session_if_missing,
+    get_db_connection,
+    get_recent_messages,
+)
 
 router = APIRouter(prefix="/api", tags=["Documents & Search"])
 
@@ -14,6 +21,11 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 5
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+    top_k: int = Field(default=5, ge=1, le=10)
 
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
@@ -91,4 +103,53 @@ def search_documents(request: SearchRequest):
         "query": request.query,
         "results_count": len(formatted_results),
         "results": formatted_results
+    }
+
+@router.post("/chat")
+def chat(request: ChatRequest):
+    """
+    Run the Step 5 RAG chat workflow:
+    session memory from SQLite -> hybrid retrieval -> Gemini answer -> persisted response.
+    """
+    question = request.message.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    session_id = request.session_id or str(uuid.uuid4())
+    title = question[:60] or "Untitled chat"
+
+    try:
+        create_session_if_missing(session_id, title)
+        chat_history = get_recent_messages(session_id)
+        add_message(session_id, "user", question)
+
+        result = rag_workflow.invoke({
+            "question": question,
+            "chat_history": chat_history,
+            "top_k": request.top_k,
+            "documents": [],
+            "answer": "",
+            "sources": [],
+        })
+
+        answer = result["answer"]
+        sources = result.get("sources", [])
+        add_message(session_id, "assistant", answer, sources)
+
+        return {
+            "session_id": session_id,
+            "answer": answer,
+            "sources": sources,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat workflow failed: {str(e)}")
+
+@router.get("/sessions/{session_id}/messages")
+def get_session_messages(session_id: str):
+    """Return recent messages for a chat session."""
+    return {
+        "session_id": session_id,
+        "messages": get_recent_messages(session_id, limit=50),
     }
