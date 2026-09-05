@@ -2,7 +2,7 @@ import os
 import shutil
 import uuid
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from services.ingestion import ingest_document
 from services.hybrid_retriever import hybrid_retriever
 from graph.workflow import rag_workflow
@@ -23,6 +23,15 @@ class SearchRequest(BaseModel):
     top_k: int = 5
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "Which framework is used in background job queueing in CodeStage?",
+                "top_k": 5
+            }
+        }
+    )
+
     message: str
     session_id: str | None = None
     top_k: int = Field(default=5, ge=1, le=10)
@@ -80,6 +89,39 @@ def get_documents():
     
     return {"documents": docs}
 
+@router.delete("/documents/{document_id}")
+def delete_document(document_id: int):
+    """Delete an uploaded document record, file, and indexed chunks."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM documents WHERE id = ?", (document_id,))
+    document = cursor.fetchone()
+
+    if not document:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    filename = document["name"]
+    deleted_chunks = hybrid_retriever.delete_documents_by_source(filename)
+
+    cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+    conn.commit()
+    conn.close()
+
+    file_path = os.path.join(UPLOAD_DIR, os.path.basename(filename))
+    file_deleted = False
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        file_deleted = True
+
+    return {
+        "status": "success",
+        "message": f"Deleted {filename}",
+        "document_id": document_id,
+        "deleted_chunks": deleted_chunks,
+        "file_deleted": file_deleted,
+    }
+
 @router.post("/search")
 def search_documents(request: SearchRequest):
     """
@@ -115,7 +157,12 @@ def chat(request: ChatRequest):
     if not question:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    session_id = request.session_id or str(uuid.uuid4())
+    requested_session_id = (request.session_id or "").strip()
+    session_id = (
+        requested_session_id
+        if requested_session_id and requested_session_id.lower() != "string"
+        else str(uuid.uuid4())
+    )
     title = question[:60] or "Untitled chat"
 
     try:

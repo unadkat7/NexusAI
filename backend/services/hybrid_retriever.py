@@ -30,9 +30,11 @@ class HybridRetriever:
 
     def _reload_bm25_index(self):
         """Reload stored chunks from ChromaDB into the BM25 keyword index."""
+        self.all_documents = []
+        self.bm25 = None
+
         results = self.collection.get(include=["documents", "metadatas"])
         if results and results["documents"]:
-            self.all_documents = []
             tokenized_corpus = []
             
             for doc_content, meta in zip(results["documents"], results["metadatas"]):
@@ -72,6 +74,17 @@ class HybridRetriever:
         # Reload BM25 index to include newly added chunks
         self._reload_bm25_index()
         print(f"✅ Indexed {len(documents)} chunks into ChromaDB & BM25.")
+
+    def delete_documents_by_source(self, source: str) -> int:
+        """Delete all indexed chunks for one uploaded source filename."""
+        results = self.collection.get(where={"source": source})
+        ids = results.get("ids", []) if results else []
+
+        if ids:
+            self.collection.delete(ids=ids)
+
+        self._reload_bm25_index()
+        return len(ids)
 
     def dense_search(self, query: str, top_k: int = 10) -> list[Document]:
         """Perform ChromaDB dense semantic vector search."""
