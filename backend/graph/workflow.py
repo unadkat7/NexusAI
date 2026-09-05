@@ -58,6 +58,25 @@ def _format_context(documents: list[Document]) -> str:
     return "\n\n".join(blocks)
 
 
+def _content_to_text(content) -> str:
+    """Normalize Gemini/LangChain content blocks into SQLite-safe text."""
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or item))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part).strip()
+
+    return str(content)
+
+
 def retrieve(state: RAGState) -> RAGState:
     top_k = max(1, min(int(state.get("top_k", 5)), 10))
     documents = hybrid_retriever.hybrid_search(state["question"], top_k=top_k)
@@ -93,7 +112,7 @@ Question:
 Answer:"""
 
     response = llm.invoke(prompt)
-    answer = getattr(response, "content", str(response))
+    answer = _content_to_text(getattr(response, "content", response))
     return {**state, "answer": answer}
 
 

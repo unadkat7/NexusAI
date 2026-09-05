@@ -69,6 +69,9 @@ def create_session_if_missing(session_id: str, title: str):
 
 def add_message(session_id: str, role: str, content: str, sources: list[dict] | None = None):
     """Persist one chat message and optional source citations."""
+    if not isinstance(content, str):
+        content = json.dumps(content)
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
